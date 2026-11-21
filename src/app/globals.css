@@ -108,6 +108,24 @@ textarea {
   overflow: hidden;
 }
 
+.hero-palm {
+  position: absolute;
+  top: 1.5rem;
+  right: 0;
+  height: min(88%, 560px);
+  fill: var(--leaf);
+  opacity: 0.22;
+  pointer-events: none;
+}
+
+@media (max-width: 760px) {
+  .hero-palm {
+    top: 2.5rem;
+    height: 170px;
+    opacity: 0.18;
+  }
+}
+
 .hero-brand {
   position: relative;
   font-family: var(--font-display);

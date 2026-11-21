@@ -1,3 +1,4 @@
+import { PalmTree } from "@/components/PalmTree";
 import { RoomCatalog } from "@/components/RoomCatalog";
 import { SiteHeader } from "@/components/SiteHeader";
 
@@ -7,6 +8,7 @@ export default function Home() {
       <SiteHeader active="catalog" />
       <main>
         <section className="hero site-shell" aria-label="Estate Sale introduction">
+          <PalmTree className="hero-palm" />
           <h1 className="hero-brand">Brownsville Estate Sale</h1>
           <p className="hero-tagline">Quality Furniture, Home Décor &amp; More!</p>
           <p className="hero-lead">
