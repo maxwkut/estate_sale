@@ -1,5 +1,5 @@
-const MAX_EDGE = 2048;
-const JPEG_QUALITY = 0.85;
+const MAX_EDGE = 1600;
+const JPEG_QUALITY = 0.75;
 
 // Phone photos are 3–5 MB; shrinking keeps page loads fast and stays well
 // inside the free Blob storage and transfer limits.

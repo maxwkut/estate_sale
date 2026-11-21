@@ -28,7 +28,7 @@ for (const [room, entry] of Object.entries(local)) {
 
     if (ext !== ".gif") {
       file = path.join(tmp, `${photo.id}.jpg`);
-      execFileSync("sips", ["-Z", "2048", "-s", "format", "jpeg", "-s", "formatOptions", "85", source, "--out", file], { stdio: "ignore" });
+      execFileSync("sips", ["-Z", "1600", "-s", "format", "jpeg", "-s", "formatOptions", "70", source, "--out", file], { stdio: "ignore" });
       contentType = "image/jpeg";
     }
 
