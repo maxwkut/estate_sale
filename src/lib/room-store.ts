@@ -28,7 +28,8 @@ async function readStore(fresh: boolean): Promise<{ store: Store; etag?: string 
   if (!result || result.statusCode !== 200) return { store: {} };
   return {
     store: (await new Response(result.stream).json()) as Store,
-    etag: result.blob.etag,
+    // get() reports a weak ETag (W/"…"), but conditional writes need the strong form.
+    etag: result.blob.etag.replace(/^W\//, ""),
   };
 }
 
