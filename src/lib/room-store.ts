@@ -33,20 +33,30 @@ async function readStore(fresh: boolean): Promise<{ store: Store; etag?: string 
   };
 }
 
-async function writeStore(store: Store, etag: string | undefined) {
-  try {
-    await put(STORE_PATH, `${JSON.stringify(store, null, 2)}\n`, {
-      access: "public",
-      contentType: "application/json",
-      addRandomSuffix: false,
-      cacheControlMaxAge: 60,
-      ...(etag ? { ifMatch: etag } : {}),
-    });
-  } catch (error) {
-    if (error instanceof BlobPreconditionFailedError) {
-      throw new ValidationError("Someone else saved at the same time. Please try again.");
+const WRITE_ATTEMPTS = 5;
+
+// Right after a write, a fresh read can still briefly return the previous
+// version, so a failed conditional write is retried against a re-read store.
+async function mutateStore<T>(apply: (store: Store) => T): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    const { store, etag } = await readStore(true);
+    const result = apply(store);
+    try {
+      await put(STORE_PATH, `${JSON.stringify(store, null, 2)}\n`, {
+        access: "public",
+        contentType: "application/json",
+        addRandomSuffix: false,
+        cacheControlMaxAge: 60,
+        ...(etag ? { ifMatch: etag } : {}),
+      });
+      return result;
+    } catch (error) {
+      if (!(error instanceof BlobPreconditionFailedError)) throw error;
+      if (attempt === WRITE_ATTEMPTS) {
+        throw new ValidationError("Could not save right now. Please try again.");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
     }
-    throw error;
   }
 }
 
@@ -86,32 +96,38 @@ type RoomUpdate = {
 export async function updateRoom(room: Room, update: RoomUpdate): Promise<RoomView> {
   const imageUrl = update.imageUrl ? await verifyUploadedPhoto(update.imageUrl) : undefined;
 
-  const { store, etag } = await readStore(true);
-  const entry: StoredRoom = store[room] ?? { description: "", photos: [] };
+  const photo = imageUrl
+    ? { id: randomUUID(), url: imageUrl, createdAt: new Date().toISOString() }
+    : undefined;
 
-  if (update.description !== undefined) {
-    entry.description = update.description.replace(/\r\n?/g, "\n").trim();
+  try {
+    return await mutateStore((store) => {
+      const entry: StoredRoom = store[room] ?? { description: "", photos: [] };
+      if (update.description !== undefined) {
+        entry.description = update.description.replace(/\r\n?/g, "\n").trim();
+      }
+      if (photo) entry.photos.push(photo);
+      store[room] = entry;
+      return toView(room, entry);
+    });
+  } catch (error) {
+    if (imageUrl) await del(imageUrl).catch(() => {});
+    throw error;
   }
-
-  if (imageUrl) {
-    entry.photos.push({ id: randomUUID(), url: imageUrl, createdAt: new Date().toISOString() });
-  }
-
-  store[room] = entry;
-  await writeStore(store, etag);
-  return toView(room, entry);
 }
 
 export async function deletePhoto(room: Room, photoId: string): Promise<RoomView> {
-  const { store, etag } = await readStore(true);
-  const entry = store[room];
-  const photo = entry?.photos.find((p) => p.id === photoId);
-  if (!entry || !photo) {
-    throw new ValidationError("Photo not found.");
-  }
-
-  entry.photos = entry.photos.filter((p) => p.id !== photoId);
-  await writeStore(store, etag);
-  await del(photo.url);
-  return toView(room, entry);
+  let removedUrl = "";
+  const view = await mutateStore((store) => {
+    const entry = store[room];
+    const photo = entry?.photos.find((p) => p.id === photoId);
+    if (!entry || !photo) {
+      throw new ValidationError("Photo not found.");
+    }
+    entry.photos = entry.photos.filter((p) => p.id !== photoId);
+    removedUrl = photo.url;
+    return toView(room, entry);
+  });
+  await del(removedUrl);
+  return view;
 }
