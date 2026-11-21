@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { BlobPreconditionFailedError, del, get, head, put } from "@vercel/blob";
+import { del, get, head, list, put } from "@vercel/blob";
 import { ROOMS, isRoom, type Room, type RoomView } from "./rooms";
 
 type StoredPhoto = {
@@ -15,49 +15,69 @@ type StoredRoom = {
 
 type Store = Partial<Record<Room, StoredRoom>>;
 
-const STORE_PATH = "rooms.json";
+// An overwritten blob can keep serving its old contents (or a 404) for a while,
+// so every save writes a new, never-overwritten version under VERSIONS_PREFIX and
+// edits always build on the newest one. SNAPSHOT_PATH is overwritten on each save
+// for the public catalog, which can tolerate a short delay. Listing versions
+// counts against the Hobby plan's 2,000 monthly advanced operations, so public
+// page views must only read the snapshot.
+const VERSIONS_PREFIX = "rooms/";
+const SNAPSHOT_PATH = "rooms.json";
+const KEEP_VERSIONS = 20;
+
 export const PHOTO_PREFIX = "photos/";
 export const MAX_PHOTO_BYTES = 20 * 1024 * 1024;
 export const PHOTO_CONTENT_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 
 export class ValidationError extends Error {}
 
-// Writes must read with `fresh` so they never build on a CDN-cached copy.
-async function readStore(fresh: boolean): Promise<{ store: Store; etag?: string }> {
-  const result = await get(STORE_PATH, { access: "public", useCache: !fresh });
-  if (!result || result.statusCode !== 200) return { store: {} };
-  return {
-    store: (await new Response(result.stream).json()) as Store,
-    // get() reports a weak ETag (W/"…"), but conditional writes need the strong form.
-    etag: result.blob.etag.replace(/^W\//, ""),
-  };
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// list() returns pathnames in ascending order, so a reversed timestamp puts the
+// newest version first.
+function newVersionPath() {
+  const reversed = String(Number.MAX_SAFE_INTEGER - Date.now()).padStart(16, "0");
+  return `${VERSIONS_PREFIX}${reversed}-${randomUUID()}.json`;
 }
 
-const WRITE_ATTEMPTS = 5;
+async function readJson(urlOrPathname: string): Promise<Store | null> {
+  const result = await get(urlOrPathname, { access: "public" });
+  if (!result || result.statusCode !== 200) return null;
+  return (await new Response(result.stream).json()) as Store;
+}
 
-// Right after a write, a fresh read can still briefly return the previous
-// version, so a failed conditional write is retried against a re-read store.
-async function mutateStore<T>(apply: (store: Store) => T): Promise<T> {
-  for (let attempt = 1; ; attempt++) {
-    const { store, etag } = await readStore(true);
-    const result = apply(store);
-    try {
-      await put(STORE_PATH, `${JSON.stringify(store, null, 2)}\n`, {
-        access: "public",
-        contentType: "application/json",
-        addRandomSuffix: false,
-        cacheControlMaxAge: 60,
-        ...(etag ? { ifMatch: etag } : {}),
-      });
-      return result;
-    } catch (error) {
-      if (!(error instanceof BlobPreconditionFailedError)) throw error;
-      if (attempt === WRITE_ATTEMPTS) {
-        throw new ValidationError("Could not save right now. Please try again.");
-      }
-      await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
-    }
+async function readLatest() {
+  const { blobs } = await list({ prefix: VERSIONS_PREFIX, limit: KEEP_VERSIONS + 5 });
+  if (blobs.length === 0) return { store: {} as Store, versions: blobs };
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    const store = await readJson(blobs[0].url);
+    if (store) return { store, versions: blobs };
+    await sleep(300 * attempt);
   }
+  throw new Error("Could not load the latest room data.");
+}
+
+async function mutateStore<T>(apply: (store: Store) => T): Promise<T> {
+  const { store, versions } = await readLatest();
+  const result = apply(store);
+  const body = `${JSON.stringify(store, null, 2)}\n`;
+
+  await put(newVersionPath(), body, {
+    access: "public",
+    contentType: "application/json",
+    addRandomSuffix: false,
+  });
+  await put(SNAPSHOT_PATH, body, {
+    access: "public",
+    contentType: "application/json",
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    cacheControlMaxAge: 60,
+  });
+
+  const stale = versions.slice(KEEP_VERSIONS - 1).map((blob) => blob.url);
+  if (stale.length > 0) await del(stale).catch(() => {});
+  return result;
 }
 
 function toView(room: Room, stored: StoredRoom | undefined): RoomView {
@@ -74,7 +94,9 @@ export function parseRoom(value: string): Room {
 }
 
 export async function listRooms({ fresh = false } = {}): Promise<RoomView[]> {
-  const { store } = await readStore(fresh);
+  const store = fresh
+    ? (await readLatest()).store
+    : ((await readJson(SNAPSHOT_PATH)) ?? (await readLatest()).store);
   return ROOMS.map((room) => toView(room, store[room]));
 }
 
@@ -95,7 +117,6 @@ type RoomUpdate = {
 
 export async function updateRoom(room: Room, update: RoomUpdate): Promise<RoomView> {
   const imageUrl = update.imageUrl ? await verifyUploadedPhoto(update.imageUrl) : undefined;
-
   const photo = imageUrl
     ? { id: randomUUID(), url: imageUrl, createdAt: new Date().toISOString() }
     : undefined;

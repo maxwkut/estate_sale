@@ -41,5 +41,5 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# pre-Blob local catalog, only read by scripts/migrate-to-blob.mjs
+# pre-Blob local catalog (already migrated)
 /data/
