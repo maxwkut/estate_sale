@@ -9,8 +9,8 @@ import { put } from "@vercel/blob";
 const DATA_DIR = path.join(process.cwd(), "data");
 const CONTENT_TYPES = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif" };
 
-if (!process.env.BLOB_READ_WRITE_TOKEN) {
-  console.error("BLOB_READ_WRITE_TOKEN is missing. Run `npx vercel env pull .env.local` first.");
+if (!process.env.BLOB_READ_WRITE_TOKEN && !(process.env.VERCEL_OIDC_TOKEN && process.env.BLOB_STORE_ID)) {
+  console.error("No Blob credentials. Set BLOB_READ_WRITE_TOKEN, or VERCEL_OIDC_TOKEN and BLOB_STORE_ID.");
   process.exit(1);
 }
 
